@@ -180,7 +180,7 @@ class Notifier:
     def __init__(self, ha: HAClient) -> None:
         self.ha = ha
 
-    def _notify_entity(self, entity: str, message: str, title: str = "Status") -> None:
+    def _notify_entity(self, entity: str, message: str, title: str = "AutoMKV") -> None:
         try:
             domain = "notify"
             service = entity.split(".", 1)[1]
@@ -198,9 +198,9 @@ class Notifier:
         fail = f"{title} failed."
         msg = succ if success else fail
         for ent in self._targets(level):
-            self._notify_entity(ent, msg, "Status")
+            self._notify_entity(ent, msg, "AutoMKV")
 
-    def send_custom(self, message: str, level: int, title: str = "Debug") -> None:
+    def send_custom(self, message: str, level: int, title: str = "AutoMKV Debug") -> None:
         for ent in self._targets(level):
             self._notify_entity(ent, message, title)
 
@@ -294,7 +294,7 @@ def processFile() -> None:
         # Debug pre-rip notification with movie name
         dprint(f"Pre-rip notification for title: {title}")
         if DEBUG:
-            notifier.send_custom(f"Debug: about to rip '{title}'", NotificationLevel, title="Auto MKV Debug")
+            notifier.send_custom(f"Debug: about to rip '{title}'", NotificationLevel, title="AutoMKV Debug")
 
         work_dir.mkdir(parents=True, exist_ok=True)
 
@@ -487,7 +487,7 @@ def main() -> None:
         print("Debug mode enabled.")
         print_settings_debug()
         # Send a start-up test notification
-        notifier.send_custom("Debug: Auto MKV started", NotificationLevel, title="Auto MKV Debug")
+        notifier.send_custom("Debug: Auto MKV started", NotificationLevel, title="AutoMKV Debug")
 
     try:
         t = threading.Thread(target=loop, daemon=True)
