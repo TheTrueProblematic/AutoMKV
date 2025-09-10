@@ -1,7 +1,6 @@
 """
-Auto MKV — Refactored
-- Reliability, readability, maintainability improved
-- AWS SES removed; Home Assistant notifications added
+Auto MKV — Refactored with Debug Flag
+- Adds --debug flag for extra diagnostics and test notifications
 - Primary functionality and UI preserved
 
 Requirements:
@@ -10,7 +9,7 @@ Environment:
   HOME_ASSISTANT_BASE_URL = e.g. http://homeassistant.local:8123
   HOME_ASSISTANT_TOKEN    = Long-Lived Access Token from Home Assistant profile
 
-Notify entities used (unchanged behavior, new backend):
+Notify entities used:
   - notify.mobile_app_prometheus (Matt)
   - notify.mobile_app_promaxeus  (Max)
 """
@@ -25,6 +24,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+import argparse
 
 import psutil
 import requests
@@ -50,6 +50,9 @@ HA_ENTITY_MATT = "notify.mobile_app_prometheus"
 HA_ENTITY_MAX = "notify.mobile_app_promaxeus"
 HTTP_TIMEOUT = 10
 
+# Debug flag (set via --debug)
+DEBUG = False
+
 # ------------------------------- Logging -------------------------------------
 
 logging.basicConfig(
@@ -68,6 +71,11 @@ recordTime = time.time()
 
 # ------------------------------ Utilities ------------------------------------
 
+def dprint(msg: str) -> None:
+    if DEBUG:
+        print(f"[DEBUG] {msg}")
+
+
 def space_to_underscore(s: str) -> str:
     return s.replace(" ", "_")
 
@@ -79,7 +87,6 @@ def underscore_to_space(s: str) -> str:
 def is_bluray_drive(drive: str) -> bool:
     """Return True if the drive exists and is mountable."""
     try:
-        # On Windows, a present disc should make disk_usage work
         psutil.disk_usage(drive)
         return True
     except Exception:
@@ -174,7 +181,6 @@ class Notifier:
         self.ha = ha
 
     def _notify_entity(self, entity: str, message: str, title: str = "Status") -> None:
-        # notify.* lives under domain "notify"; service name is the entity after the dot
         try:
             domain = "notify"
             service = entity.split(".", 1)[1]
@@ -191,19 +197,20 @@ class Notifier:
         succ = f"{title} was ripped successfully!"
         fail = f"{title} failed."
         msg = succ if success else fail
-
-        targets = []
-        if level == 1:
-            targets = [HA_ENTITY_MATT, HA_ENTITY_MAX]
-        elif level == 2:
-            targets = [HA_ENTITY_MATT]
-        elif level == 3:
-            targets = [HA_ENTITY_MAX]
-        else:
-            targets = [HA_ENTITY_MATT, HA_ENTITY_MAX]  # safe default
-
-        for ent in targets:
+        for ent in self._targets(level):
             self._notify_entity(ent, msg, "Status")
+
+    def send_custom(self, message: str, level: int, title: str = "Debug") -> None:
+        for ent in self._targets(level):
+            self._notify_entity(ent, message, title)
+
+    @staticmethod
+    def _targets(level: int) -> list[str]:
+        if level == 2:
+            return [HA_ENTITY_MATT]
+        if level == 3:
+            return [HA_ENTITY_MAX]
+        return [HA_ENTITY_MATT, HA_ENTITY_MAX]
 
 
 ha_client = HAClient(HA_BASE_URL, HA_TOKEN)
@@ -222,7 +229,6 @@ def run_makemkv_info() -> str:
 
 
 def run_makemkv_rip(output_dir: Path) -> tuple[int, str]:
-    # Keep the command identical to previous behavior (all titles)
     cmd = f'"{MAKEMKV}" mkv disc:0 all {str(output_dir)}'
     log.info("Running: %s", cmd)
     result = subprocess.run(cmd, shell=True, text=True, capture_output=True)
@@ -233,7 +239,6 @@ def run_makemkv_rip(output_dir: Path) -> tuple[int, str]:
 
 
 def parse_disc_title(info_stdout: str) -> str:
-    # Preserve prior parsing behavior using the same search token
     searchTerm = '1WL","'
     title = find_text_after_search(searchTerm, info_stdout)
     return underscore_to_space(title)
@@ -285,6 +290,12 @@ def processFile() -> None:
         work_dir = RIP_DEST / space_to_underscore(title)
         print(f"Title: {title}")
         print(f"Work Folder: {work_dir}")
+
+        # Debug pre-rip notification with movie name
+        dprint(f"Pre-rip notification for title: {title}")
+        if DEBUG:
+            notifier.send_custom(f"Debug: about to rip '{title}'", NotificationLevel, title="Auto MKV Debug")
+
         work_dir.mkdir(parents=True, exist_ok=True)
 
         rc, _ = run_makemkv_rip(work_dir)
@@ -298,7 +309,6 @@ def processFile() -> None:
         num_largest = largest_only(work_dir)
         if num_largest != 1:
             try:
-                # Fallback to random deletion to ensure one file left (match original behavior)
                 print(f"{num_largest} files remain...Deleting Randomly")
                 rand_delete_except_one(work_dir)
             except Exception as e:
@@ -378,10 +388,12 @@ def levelSetError():
 
 def setLevel(level: int) -> None:
     global guiStatus, NotificationLevel
+    prev = NotificationLevel
     if guiStatus != 2:
-        print(f"Notification level set to {level}")
-        guiStatus = 5
         NotificationLevel = level
+        print(f"Notification level set to {level}")
+        dprint(f"Notification level changed from {prev} to {level}")
+        guiStatus = 5
         update_status()
     else:
         levelSetError()
@@ -391,6 +403,7 @@ def start() -> None:
     global guiStatus, running
     running = True
     guiStatus = 7
+    dprint("Start pressed. Monitoring enabled.")
     update_status()
 
 
@@ -398,6 +411,7 @@ def stop() -> None:
     global guiStatus, running
     running = False
     guiStatus = 4
+    dprint("Stop pressed. Monitoring disabled.")
     update_status()
 
 
@@ -438,7 +452,6 @@ def loop() -> None:
                     guiStatus = 1
                     update_status()
                 time.sleep(POLL_WHEN_STOPPED_SEC)
-            # Keep status fresh
             update_status()
 
     except KeyboardInterrupt:
@@ -451,12 +464,36 @@ def gui() -> None:
     root.mainloop()
 
 
+def print_settings_debug():
+    dprint("Effective settings:")
+    dprint(f"  MAKEMKV: {MAKEMKV}")
+    dprint(f"  RIP_DEST: {RIP_DEST}")
+    dprint(f"  BLURAY_DRIVE: {BLURAY_DRIVE}")
+    dprint(f"  Timers: running={POLL_WHEN_RUNNING_SEC}s, stopped={POLL_WHEN_STOPPED_SEC}s, post_insert={POST_INSERT_DELAY_SEC}s, await_eject={AWAIT_EJECT_POLL_SEC}s")
+    dprint(f"  HA_BASE_URL: {HA_BASE_URL}")
+    dprint(f"  HA_TOKEN present: {'yes' if bool(HA_TOKEN) else 'no'}")
+    dprint(f"  NotificationLevel: {NotificationLevel}")
+
+
 def main() -> None:
+    global DEBUG
+
+    parser = argparse.ArgumentParser(description="Auto MKV Blu-ray Ripper")
+    parser.add_argument("--debug", action="store_true", help="enable debug logging and test notifications")
+    args, unknown = parser.parse_known_args()
+    DEBUG = bool(args.debug)
+
+    if DEBUG:
+        print("Debug mode enabled.")
+        print_settings_debug()
+        # Send a start-up test notification
+        notifier.send_custom("Debug: Auto MKV started", NotificationLevel, title="Auto MKV Debug")
+
     try:
-        t1 = threading.Thread(target=loop, args=())
-        t1.start()
+        t = threading.Thread(target=loop, daemon=True)
+        t.start()
         gui()
-        t1.join()
+        t.join()
     except KeyboardInterrupt:
         print("Monitoring interrupted by user.")
     finally:
